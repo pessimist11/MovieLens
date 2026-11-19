@@ -1,0 +1,27 @@
+# Environment
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Datasets and generated artifacts: reproducible via scripts, never committed
+data/raw/
+data/processed/
+data/*.zip
+artifacts/*
+!artifacts/metrics/
+artifacts/metrics/*
+!artifacts/metrics/.gitkeep
+
+# Local / editor
+.DS_Store
+.env
+.idea/
+.vscode/
+.workbuddy/

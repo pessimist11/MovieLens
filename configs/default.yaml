@@ -1,0 +1,36 @@
+project:
+  seed: 42
+  root: "."
+
+data:
+  dataset: ml-latest-small        # ml-latest-small | ml-1m
+  raw_dir: data/raw
+  processed_dir: data/processed
+  min_user_interactions: 5
+  min_item_interactions: 1
+  positive_threshold: 0           # 0 = every interaction is positive; 4 = rating >= 4 only
+
+split:
+  # leave_last_out: per-user last interaction = test, second-last = valid.
+  # global: global timestamp cut, closer to production but far fewer test users.
+  strategy: leave_last_out        # global | leave_last_out
+  train_ratio: 0.8
+  valid_ratio: 0.1
+  negatives_per_positive: 4
+  hard_negative_ratio: 0.5        # popularity-sampled vs uniform negatives
+
+eval:
+  k: 10
+  tail_quantile: 0.8              # bottom 80% by train interaction count = long tail
+
+recall:
+  topk_per_source: 200
+  popularity_decay: 0.0           # 0 = plain count; >0 = exp(-lambda * age)
+
+rerank:
+  enabled: true
+  lambda: 0.7                     # relevance weight in MMR
+
+api:
+  host: 127.0.0.1
+  port: 8000
