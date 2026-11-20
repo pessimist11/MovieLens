@@ -61,6 +61,10 @@ class RecallModel(ABC):
 
     name: str = "base"
     implemented: bool = False
+    # Fallback sources (popularity) only backfill when personalised recall is
+    # empty or too small. Letting them compete in the same rank fusion would
+    # re-introduce the popularity bias the personalised models just removed.
+    fallback_only: bool = False
 
     def fit(self, dataset) -> "RecallModel":
         """Optional offline fitting. Defaults to a stateless model."""

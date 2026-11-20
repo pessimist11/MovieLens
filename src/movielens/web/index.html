@@ -47,6 +47,11 @@
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   td { padding: 6px 0; border-bottom: 1px solid var(--border); }
   td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+  th { text-align: left; font-weight: 500; color: var(--muted); font-size: 12px;
+    padding: 6px 12px 6px 0; border-bottom: 1px solid var(--border); }
+  .abl td { padding-right: 12px; }
+  .abl td:not(:first-child), .abl th:not(:first-child) { text-align: right; }
+  .abl tr.best td { color: var(--ok); }
   .hint { color: var(--muted); font-size: 12px; margin-top: 10px; }
   .err { color: #a32d2d; font-size: 13px; margin-top: 10px; }
 </style>
@@ -68,7 +73,7 @@
       <label class="switch"><input type="checkbox" id="rerank" checked> 启用 MMR 重排</label>
       <button id="go">获取推荐</button>
     </div>
-    <div class="hint" id="explain">当前仅启用热门召回基线；ItemCF / BPR / 双塔 / DIN 为后续阶段的接口占位。</div>
+    <div class="hint" id="explain">当前链路：ItemCF 协同召回（热门仅在冷启动/候选不足时兜底）→ MMR 重排；BPR / 双塔 / DIN 为后续阶段。</div>
     <div class="err" id="err"></div>
   </div>
 
@@ -91,6 +96,12 @@
         <div id="stages"><div class="hint">暂无数据</div></div>
       </div>
     </div>
+  </div>
+
+  <div class="panel">
+    <h2>离线消融对比（同一 test 集、同一 K、同一 seen 过滤）</h2>
+    <table id="ablation" class="abl"><tr><td class="hint">运行 scripts/evaluate.py 后显示</td></tr></table>
+    <div class="hint">热门只作兜底：等权 RRF 会让热门物品挤掉个性化候选，覆盖率与长尾份额明显下降。</div>
   </div>
 </div>
 <script>
@@ -117,7 +128,10 @@ async function init() {
     if (h.stages) {
       const rows = [];
       for (const group of ['recall', 'rank']) {
-        for (const s of h.stages[group]) rows.push([`${group}: ${s.name}`, s.implemented ? '已实现' : '待实现']);
+        for (const s of h.stages[group]) {
+          const role = s.role === 'fallback' ? ' · 兜底' : '';
+          rows.push([`${group}: ${s.name}${role}`, s.implemented ? '已实现' : '待实现']);
+        }
       }
       rows.push(['rerank: mmr', h.stages.rerank.implemented ? '已实现' : '待实现']);
       renderKV($('stages'), rows);
@@ -132,6 +146,14 @@ async function init() {
       const t = m.test || m;
       const pairs = Object.entries(t).filter(([k]) => typeof t[k] === 'number');
       $('metrics').innerHTML = pairs.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${Number(v).toFixed(4)}</td></tr>`).join('');
+    }
+    if (Array.isArray(m.ablation)) {
+      const cols = ['recall@k', 'ndcg@k', 'coverage', 'long_tail_share', 'ild'];
+      const best = m.ablation.reduce((a, b) => (b.test['recall@k'] > a.test['recall@k'] ? b : a)).variant;
+      $('ablation').innerHTML =
+        '<tr><th>方案</th><th>Recall@10</th><th>NDCG@10</th><th>覆盖率</th><th>长尾占比</th><th>ILD</th></tr>' +
+        m.ablation.map(r => `<tr class="${r.variant === best ? 'best' : ''}"><td>${esc(r.variant)}</td>` +
+          cols.map(c => `<td>${Number(r.test[c]).toFixed(4)}</td>`).join('') + '</tr>').join('');
     }
   } catch (e) { $('status').textContent = '服务未连接'; $('err').textContent = e.message; }
 }

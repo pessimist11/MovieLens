@@ -114,4 +114,8 @@ def metrics():
             "status": "not_evaluated",
             "hint": "Run: .venv/bin/python scripts/evaluate.py",
         }
-    return json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    ablation_path = path.parent / "ablation.json"
+    if ablation_path.exists():
+        payload["ablation"] = json.loads(ablation_path.read_text(encoding="utf-8"))
+    return payload

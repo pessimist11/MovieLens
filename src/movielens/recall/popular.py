@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ..config import load_config
 from ..schema import Candidate, RecallModel
 
 
@@ -15,7 +16,12 @@ class PopularityRecall(RecallModel):
     name = "popular"
     implemented = True
 
-    def __init__(self, dataset, decay: float = 0.0):
+    def __init__(self, dataset, decay: float | None = None, fallback_only: bool | None = None):
+        cfg = load_config().raw.get("recall", {})
+        decay = cfg.get("popularity_decay", 0.0) if decay is None else decay
+        self.fallback_only = bool(
+            cfg.get("popularity_as_fallback", True) if fallback_only is None else fallback_only
+        )
         train = dataset.frame("train")
         counts = np.bincount(
             train["item_idx"].to_numpy(), minlength=dataset.n_items

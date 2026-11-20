@@ -1,17 +1,65 @@
-"""Full-pipeline offline evaluation + MMR relevance/diversity trade-off scan.
+"""Full-pipeline offline evaluation: ablation table + MMR trade-off scan.
 
-Run:  .venv/bin/python scripts/evaluate.py
-Output: artifacts/metrics/baseline.json, artifacts/metrics/mmr_tradeoff.json
+Every variant is evaluated on the SAME test set, with the SAME k and the SAME
+seen filtering, so the numbers are comparable across layers.
+
+Run:  .venv/bin/python scripts/evaluate.py [--no-sweep]
+Output: artifacts/metrics/{baseline.json, ablation.json, mmr_tradeoff.json}
 """
 
 from __future__ import annotations
 
+import argparse
+import copy
 import json
 
 from movielens.config import load_config
 from movielens.eval.metrics import evaluate_all
 from movielens.pipeline import Recommender
 from movielens.rerank import MMRReranker
+
+# The incremental story of the project. The last two rows are the interesting
+# comparison: popularity as a backfill vs popularity inside equal-weight RRF.
+ABLATIONS = [
+    {"label": "popular", "sources": ["popular"], "mmr": False},
+    {"label": "popular+mmr", "sources": ["popular"], "mmr": True},
+    {"label": "itemcf", "sources": ["itemcf"], "mmr": False},
+    {"label": "itemcf+mmr", "sources": ["itemcf"], "mmr": True},
+    {"label": "itemcf+popular_fallback+mmr", "sources": ["itemcf", "popular"], "mmr": True},
+    {
+        "label": "rrf_equal(popular,itemcf)+mmr",
+        "sources": ["popular", "itemcf"],
+        "mmr": True,
+        "fallback": False,
+    },
+]
+
+
+def build_variant(
+    base: Recommender,
+    sources: list[str],
+    use_mmr: bool,
+    lam: float | None = None,
+    fallback: bool = True,
+):
+    """Shallow-copy the pipeline and swap recall sources / reranker."""
+    rec = copy.copy(base)
+    available = {m.name: m for m in base.recall_models}
+    missing = [s for s in sources if s not in available]
+    if missing:
+        raise ValueError(f"Recall sources not implemented/loaded: {missing}")
+    models = []
+    for source in sources:
+        model = copy.copy(available[source])
+        if source == "popular":
+            model.fallback_only = fallback
+        models.append(model)
+    rec.recall_models = models
+    if use_mmr:
+        rec.reranker = MMRReranker(base.dataset, lam if lam is not None else base.cfg.rerank.lambda_)
+    else:
+        rec.reranker = None
+    return rec
 
 
 def lambda_sweep(rec: Recommender, split: str = "valid", max_users: int = 100) -> list[dict]:
@@ -44,35 +92,71 @@ def lambda_sweep(rec: Recommender, split: str = "valid", max_users: int = 100) -
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Offline ablation evaluation")
+    parser.add_argument("--no-sweep", action="store_true", help="skip the MMR lambda sweep")
+    args = parser.parse_args()
+
     cfg = load_config()
-    rec = Recommender()
-    valid = rec.evaluate("valid").as_dict()
-    test = rec.evaluate("test").as_dict()
+    base = Recommender()
+    out_dir = cfg.artifacts_dir() / "metrics"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    rows = []
+    for spec in ABLATIONS:
+        rec = build_variant(
+            base, spec["sources"], spec["mmr"], fallback=spec.get("fallback", True)
+        )
+        row = {
+            "variant": spec["label"],
+            "sources": spec["sources"],
+            "mmr": spec["mmr"],
+            "popular_as_fallback": spec.get("fallback", True),
+            "rerank_lambda": cfg.rerank.lambda_ if spec["mmr"] else None,
+            "valid": rec.evaluate("valid").as_dict(),
+            "test": rec.evaluate("test").as_dict(),
+        }
+        rows.append(row)
+        t = row["test"]
+        print(
+            f"[ablation] {spec['label']:28s} recall@10={t['recall@k']:.4f}"
+            f"  ndcg@10={t['ndcg@k']:.4f}  coverage={t['coverage']:.4f}"
+            f"  tail_cov={t['long_tail_coverage']:.4f}  tail_share={t['long_tail_share']:.4f}"
+            f"  ILD={t['ild']:.4f}"
+        )
+    (out_dir / "ablation.json").write_text(
+        json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+    default = next(r for r in rows if r["variant"] == "itemcf+popular_fallback+mmr")
     snapshot = {
-        "model": "framework-baseline (popular recall + MMR)",
+        "model": "itemcf recall + popularity fallback + MMR",
         "dataset": cfg.data.dataset,
         "split_strategy": cfg.split.strategy,
         "rerank_lambda": cfg.rerank.lambda_,
-        "valid": valid,
-        "test": test,
+        "recall_sources": [m.name for m in base.recall_models],
+        "itemcf": next(
+            (m.stats for m in base.recall_models if m.name == "itemcf"), None
+        ),
+        "valid": default["valid"],
+        "test": default["test"],
     }
-    out_dir = cfg.artifacts_dir() / "metrics"
-    out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "baseline.json").write_text(
         json.dumps(snapshot, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    tradeoff = lambda_sweep(rec)
-    (out_dir / "mmr_tradeoff.json").write_text(
-        json.dumps(tradeoff, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-    print("[evaluate] test:", json.dumps(test, ensure_ascii=False))
-    print("[evaluate] MMR lambda sweep (valid subset):")
-    for row in tradeoff:
-        print(
-            f"  lambda={row['lambda']:.2f}  recall@10={row['recall@k']:.4f}"
-            f"  ndcg@10={row['ndcg@k']:.4f}  ILD={row['ild']:.4f}"
+
+    if not args.no_sweep:
+        tradeoff = lambda_sweep(base)
+        (out_dir / "mmr_tradeoff.json").write_text(
+            json.dumps(tradeoff, indent=2, ensure_ascii=False), encoding="utf-8"
         )
-    print(f"[evaluate] wrote {out_dir}/baseline.json and mmr_tradeoff.json")
+        print("[evaluate] MMR lambda sweep (valid subset):")
+        for row in tradeoff:
+            print(
+                f"  lambda={row['lambda']:.2f}  recall@10={row['recall@k']:.4f}"
+                f"  ndcg@10={row['ndcg@k']:.4f}  ILD={row['ild']:.4f}"
+            )
+    print(f"[evaluate] wrote ablation.json / baseline.json"
+          f"{'' if args.no_sweep else ' / mmr_tradeoff.json'} in {out_dir}")
 
 
 if __name__ == "__main__":

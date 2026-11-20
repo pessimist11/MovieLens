@@ -51,6 +51,7 @@ class EvalCfg:
 class RecallCfg:
     topk_per_source: int = 200
     popularity_decay: float = 0.0
+    min_primary_candidates: int = 50
 
 
 @dataclass(frozen=True)

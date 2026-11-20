@@ -45,7 +45,18 @@ class Recommender:
         """Report which stages are wired in, for /health and the README roadmap."""
         return {
             "recall": [
-                {"name": cls.name, "implemented": cls.implemented}
+                {
+                    "name": cls.name,
+                    "implemented": cls.implemented,
+                    "role": next(
+                        (
+                            "fallback" if m.fallback_only else "primary"
+                            for m in self.recall_models
+                            if m.name == cls.name
+                        ),
+                        None,
+                    ),
+                }
                 for cls in RECALL_REGISTRY
             ],
             "rank": [
@@ -59,19 +70,21 @@ class Recommender:
             },
         }
 
-    def recall(self, user_idx: int, exclude: set[int]) -> list[Candidate]:
-        """Merge recall sources with Reciprocal Rank Fusion.
+    def _rrf(self, models, user_idx: int, exclude: set[int]) -> list[Candidate]:
+        """Reciprocal Rank Fusion over the given sources.
 
         RRF avoids comparing raw scores from models with different scales;
-        each source contributes ``1 / (60 + rank)`` per candidate.
+        each source contributes ``weight / (60 + rank)`` per candidate.
         """
+        weights = self.cfg.raw.get("recall", {}).get("source_weights", {}) or {}
         fused: dict[int, float] = defaultdict(float)
         sources: dict[int, set[str]] = defaultdict(set)
-        for model in self.recall_models:
+        for model in models:
+            weight = float(weights.get(model.name, 1.0))
             for rank, cand in enumerate(
                 model.recall(user_idx, self.cfg.recall.topk_per_source, exclude)
             ):
-                fused[cand.item_idx] += 1.0 / (RRF_CONSTANT + rank + 1)
+                fused[cand.item_idx] += weight / (RRF_CONSTANT + rank + 1)
                 sources[cand.item_idx].add(cand.source)
         merged = [
             Candidate(
@@ -83,6 +96,36 @@ class Recommender:
         ]
         merged.sort(key=lambda c: c.score, reverse=True)
         return merged
+
+    def recall(self, user_idx: int, exclude: set[int]) -> list[Candidate]:
+        """Fuse personalised sources, then backfill with fallback sources.
+
+        Equal-weight fusion with a popularity source measurably hurts both
+        coverage and recall (see artifacts/metrics/ablation.json): blockbusters
+        always sit at rank 0 of the popular list, so they outrank personalised
+        candidates. Popularity therefore only fills the tail of the candidate
+        pool, or the whole pool for cold-start users.
+        """
+        primary = [m for m in self.recall_models if not m.fallback_only]
+        fallback = [m for m in self.recall_models if m.fallback_only]
+        merged = self._rrf(primary, user_idx, exclude)
+        if not fallback:
+            return merged
+        if not merged:
+            return self._rrf(fallback, user_idx, exclude)
+        if len(merged) >= self.cfg.recall.min_primary_candidates:
+            return merged
+
+        # Backfill BELOW every personalised candidate: fallback items must not
+        # outrank them, only guarantee enough material for ranking / MMR.
+        present = {c.item_idx for c in merged}
+        floor = min(c.score for c in merged) * 0.5
+        extras = [
+            Candidate(item_idx=c.item_idx, score=floor * (0.99**rank), source=c.source)
+            for rank, c in enumerate(self._rrf(fallback, user_idx, exclude))
+            if c.item_idx not in present
+        ]
+        return merged + extras
 
     def recommend_raw(
         self,
@@ -121,9 +164,19 @@ class Recommender:
         }
         return final, latency
 
-    def _reason(self, user_idx: int | None, item_idx: int) -> str:
+    def _reason(self, user_idx: int | None, item_idx: int, source: str = "") -> str:
         if user_idx is None or user_idx < 0:
             return "新用户兜底：当前热门"
+        # Collaborative filtering can point at the exact neighbour that fired,
+        # which is a much stronger explanation than a genre overlap guess.
+        if "itemcf" in source:
+            for model in self.recall_models:
+                if model.name == "itemcf" and hasattr(model, "explain"):
+                    found = model.explain(user_idx, item_idx)
+                    if found is not None:
+                        history_item, _ = found
+                        title = self.dataset.movie_row(history_item)["title"]
+                        return f"与你喜欢的《{title}》常被一起观看"
         history = self.dataset.seen_for(user_idx, "all")
         target = self._genre_sets[item_idx]
         if not history or not target:
@@ -172,7 +225,7 @@ class Recommender:
                     score=round(cand.score, 6),
                     source=cand.source,
                     rank_score=cand.rank_score,
-                    reason=self._reason(user_idx, cand.item_idx),
+                    reason=self._reason(user_idx, cand.item_idx, cand.source),
                 )
             )
         return {

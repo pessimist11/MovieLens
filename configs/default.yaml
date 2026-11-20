@@ -26,6 +26,19 @@ eval:
 recall:
   topk_per_source: 200
   popularity_decay: 0.0           # 0 = plain count; >0 = exp(-lambda * age)
+  popularity_as_fallback: true    # popular backfills instead of competing in RRF
+  min_primary_candidates: 50      # backfill when personalised recall returns fewer
+  source_weights: {}              # optional per-source RRF weight, default 1.0
+  itemcf:
+    # Tuned on the VALID split only (scripts/tune_itemcf.py); see README table.
+    top_n_neighbours: 20          # neighbours kept per item after similarity
+    alpha: 0.5                    # 0.5 = cosine; 0 = raw co-occurrence; 1 = hard popularity penalty
+    shrink: 0.0                   # denominator shrinkage for low-support pairs
+    iuf: true                     # inverse user frequency weighting inside R
+    min_cooccurrence: 1           # drop pairs with fewer RAW co-occurrences than this
+    history_size: 100             # most recent TRAIN items used as user profile
+    history_decay: 0.05           # exp(-decay * age_days) weight on history items
+    cache: true                   # reuse artifacts/models/itemcf when train + params match
 
 rerank:
   enabled: true
