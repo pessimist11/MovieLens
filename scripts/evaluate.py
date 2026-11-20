@@ -20,11 +20,21 @@ from movielens.rerank import MMRReranker
 
 # The incremental story of the project. The last two rows are the interesting
 # comparison: popularity as a backfill vs popularity inside equal-weight RRF.
+DEFAULT_VARIANT = "itemcf+bpr+popular_fallback+mmr"
+
 ABLATIONS = [
     {"label": "popular", "sources": ["popular"], "mmr": False},
     {"label": "popular+mmr", "sources": ["popular"], "mmr": True},
     {"label": "itemcf", "sources": ["itemcf"], "mmr": False},
     {"label": "itemcf+mmr", "sources": ["itemcf"], "mmr": True},
+    {"label": "bpr", "sources": ["bpr"], "mmr": False},
+    {"label": "bpr+mmr", "sources": ["bpr"], "mmr": True},
+    {"label": "itemcf+bpr+mmr", "sources": ["itemcf", "bpr"], "mmr": True},
+    {
+        "label": DEFAULT_VARIANT,
+        "sources": ["itemcf", "bpr", "popular"],
+        "mmr": True,
+    },
     {"label": "itemcf+popular_fallback+mmr", "sources": ["itemcf", "popular"], "mmr": True},
     {
         "label": "rrf_equal(popular,itemcf)+mmr",
@@ -127,16 +137,14 @@ def main() -> None:
         json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
-    default = next(r for r in rows if r["variant"] == "itemcf+popular_fallback+mmr")
+    default = next(r for r in rows if r["variant"] == DEFAULT_VARIANT)
     snapshot = {
-        "model": "itemcf recall + popularity fallback + MMR",
+        "model": f"{DEFAULT_VARIANT} (weighted RRF + popularity fallback)",
         "dataset": cfg.data.dataset,
         "split_strategy": cfg.split.strategy,
         "rerank_lambda": cfg.rerank.lambda_,
         "recall_sources": [m.name for m in base.recall_models],
-        "itemcf": next(
-            (m.stats for m in base.recall_models if m.name == "itemcf"), None
-        ),
+        "model_stats": {m.name: getattr(m, "stats", {}) for m in base.recall_models},
         "valid": default["valid"],
         "test": default["test"],
     }

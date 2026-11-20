@@ -40,6 +40,20 @@ recall:
     history_decay: 0.05           # exp(-decay * age_days) weight on history items
     cache: true                   # reuse artifacts/models/itemcf when train + params match
 
+mf:
+  bpr:
+    # Tuned on VALID only (scripts/tune_bpr.py).
+    dim: 32
+    lr: 0.01
+    reg: 0.001
+    epochs: 60                    # upper bound; early stopping on valid Recall@10
+    batch_size: 8192
+    negatives_per_positive: 4     # re-sampled every epoch, not frozen
+    hard_negative_ratio: 0.0      # uniform negatives won on ml-latest-small (see README)
+    eval_every: 5
+    patience: 4                   # stop after 4 evaluations without improvement
+    cache: true                   # reuse artifacts/models/bpr when train + params match
+
 rerank:
   enabled: true
   lambda: 0.7                     # relevance weight in MMR

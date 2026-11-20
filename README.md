@@ -3,10 +3,10 @@
 一条完整的推荐系统链路：**时序切分 → 多路召回 → 精排 → MMR 重排 → 离线评估 → FastAPI 服务 + 网页**。
 不使用现成的推荐库一键完成，每一层都自己实现、可插拔、可对比。
 
-> 当前状态：**阶段 0/1/2/6/7/8 已完成**。链路为
-> `ItemCF 协同召回（热门仅在冷启动/候选不足时兜底）→ MMR 重排 → 评估 → FastAPI + 网页`，
-> 30 个 pytest 全过，test 集 `Recall@10 = 0.0656`，是热门基线的 1.74 倍。
-> BPR-MF / 双塔+FAISS / DIN 已定义接口与实现计划，代码为占位（见下方 Roadmap）。
+> 当前状态：**阶段 0/1/2/3/6/7/8 已完成**。链路为
+> `ItemCF + BPR-MF 两路个性化召回（加权 RRF，热门仅兜底）→ MMR 重排 → 评估 → FastAPI + 网页`，
+> 39 个 pytest 全过，test 集 `Recall@10 = 0.0820`，是热门基线的 2.17 倍、单路 ItemCF 的 1.25 倍。
+> 双塔+FAISS / DIN / DeepFM 已定义接口与实现计划，代码为占位（见下方 Roadmap）。
 > 每完成一层只需把 `implemented = True` 打开，`pipeline.py` 会自动接入，无需改动其他代码。
 
 ## 快速开始
@@ -22,8 +22,9 @@
 ./scripts/setup.sh                                   # 建 venv + 装依赖
 .venv/bin/python -m movielens.data.download         # 下载 ml-latest-small
 .venv/bin/python -m movielens.data.prepare          # 时序切分 + 负采样
-.venv/bin/python -m pytest                          # 30 项测试
+.venv/bin/python -m pytest                          # 39 项测试
 .venv/bin/python scripts/tune_itemcf.py             # ItemCF 超参扫描（只用 valid）
+.venv/bin/python scripts/tune_bpr.py                # BPR-MF 超参扫描（只用 valid）
 .venv/bin/python scripts/evaluate.py                # 消融对比 + MMR λ 扫描
 .venv/bin/python -m uvicorn movielens.api.main:app --port 8000
 # 打开 http://127.0.0.1:8000/
@@ -58,17 +59,17 @@ src/movielens/
   recall/popular.py           热门基线 + 冷启动/候选不足兜底
   recall/itemcf.py            ItemCF：共现、热度惩罚、IUF、top-N 邻居、矩阵缓存
   recall/two_tower.py         双塔 + FAISS（占位）
-  mf/bpr.py                   BPR-MF（占位）
+  mf/bpr.py                   BPR-MF：pairwise 训练、动态负采样、valid 早停、向量缓存
   rank/{din,deepfm}.py        精排（占位）
   rerank/mmr.py               MMR 重排
-  eval/metrics.py             Recall/NDCG/覆盖率/长尾/新颖度/ILD
+  eval/metrics.py             Recall/NDCG/覆盖率/长尾/新颖度/ILD + 分数矩阵快速评估
   pipeline.py                 唯一的编排链路（离线与在线共用）
   api/main.py                 FastAPI
   web/index.html              演示网页（推荐结果 + 消融对比表）
-scripts/                      setup.sh / run_all.sh / evaluate.py / tune_itemcf.py
-tests/                        指标、切分防穿越、ItemCF 手算、召回融合、MMR、API 契约
+scripts/                      setup.sh / run_all.sh / evaluate.py / tune_itemcf.py / tune_bpr.py
+tests/                        指标、切分防穿越、ItemCF 手算、BPR、召回融合、MMR、API 契约
 artifacts/metrics/            离线指标快照（脚本生成）
-artifacts/models/itemcf/      相似度矩阵缓存（按 train 数据 + 超参指纹命名）
+artifacts/models/{itemcf,bpr}/  模型缓存（按 train 数据 + 超参指纹命名）
 ```
 
 ## 数据流与关键约定
@@ -116,19 +117,28 @@ artifacts/models/itemcf/      相似度矩阵缓存（按 train 数据 + 超参�
 | popular + MMR | 0.0426 | 0.0199 | 0.0125 | 0.0000 | 0.0000 | 0.7473 |
 | itemcf | 0.0607 | 0.0297 | 0.0935 | 0.0523 | 0.0926 | 0.6685 |
 | itemcf + MMR | 0.0656 | 0.0316 | 0.0945 | 0.0536 | 0.0964 | 0.7180 |
-| **itemcf + 热门兜底 + MMR（默认）** | **0.0656** | **0.0316** | **0.0946** | **0.0536** | **0.0964** | **0.7188** |
+| bpr | 0.0590 | 0.0302 | 0.1225 | 0.0131 | 0.0200 | 0.6713 |
+| bpr + MMR | 0.0607 | 0.0311 | 0.1204 | 0.0132 | 0.0195 | 0.7173 |
+| itemcf + bpr + MMR | 0.0820 | 0.0401 | 0.0894 | 0.0187 | 0.0280 | 0.7298 |
+| **itemcf + bpr + 热门兜底 + MMR（默认）** | **0.0820** | **0.0401** | **0.0894** | **0.0187** | **0.0280** | **0.7298** |
+| itemcf + 热门兜底 + MMR | 0.0656 | 0.0316 | 0.0946 | 0.0536 | 0.0964 | 0.7188 |
 | popular + itemcf 等权 RRF + MMR | 0.0574 | 0.0260 | 0.0304 | 0.0095 | 0.0152 | 0.7339 |
 
-三个值得记住的结论：
+四个值得记住的结论：
 
 1. **协同过滤相对热门基线**：Recall `0.0377 → 0.0656`（+74%），Coverage `0.0124 → 0.0946`（7.6 倍），
    长尾占比 `0 → 0.0964`。热门基线长尾覆盖恒为 0，就是马太效应的量化证据。
-2. **MMR 不只是"牺牲相关性换多样性"**：这里 Recall 反而从 0.0607 升到 0.0656、ILD 从 0.6685 升到 0.7188。
-   因为 ItemCF 的原始 Top10 常挤满同一批高相似物品，去同质化后正确答案才有机会进入前 10。
-   λ 扫描（valid 子集）仍是典型权衡：`λ=0.5` 时 ILD 0.772 / Recall 0.060，`λ=1.0` 时 ILD 0.661 / Recall 0.080。
-3. **多路召回不是"加一路就更好"**：把热门和 ItemCF 等权 RRF 后 Recall 降到 0.0574、长尾占比从 0.0964
+2. **多路个性化召回是互补的，这是本阶段最大收益**：ItemCF + BPR 两路 RRF 后 Recall `0.0820`，
+   比单路 ItemCF 高 25%、比单路 BPR 高 35%。两者擅长的物品集合不同——BPR 的 Coverage 最高（0.1225，
+   隐向量泛化到无共现的物品），ItemCF 的长尾占比最高（0.0964，共现图天然偏向小众物品），
+   融合后取两者之长。代价是长尾占比被稀释到 0.0280，这正是后面重排/精排要处理的问题。
+3. **MMR 不只是"牺牲相关性换多样性"**：ItemCF 单路加 MMR 后 Recall 从 0.0607 升到 0.0656、ILD 从
+   0.6685 升到 0.7188。因为原始 Top10 常挤满同一批高相似物品，去同质化后正确答案才有机会进入前 10。
+   λ 扫描（valid 子集）仍是典型权衡：`λ=0.5` 时 ILD 0.770 / Recall 0.080，`λ=1.0` 时 ILD 0.682 / Recall 0.080。
+4. **多路召回不是"加一路就更好"**：把热门和 ItemCF 等权 RRF 后 Recall 降到 0.0574、长尾占比从 0.0964
    跌到 0.0152。热门物品永远占据 popular 路的 rank 0，RRF 给它们稳定的 `1/61` 分，个性化候选反而被稀释。
-   所以热门在本项目里只做兜底，个性化源之间才做加权 RRF。
+   所以热门在本项目里只做兜底，个性化源之间才做加权 RRF。RRF 权重扫描（valid）显示把 BPR 权重降到 0.5
+   可把长尾占比从 0.0280 抬到 0.0620，而 Recall 变化（0.0754 → 0.0770）只有一个用户的量级，故默认保持等权。
 
 复现：`scripts/evaluate.py`，结果写入 `artifacts/metrics/{ablation,baseline,mmr_tradeoff}.json`（不入库）。
 
@@ -158,7 +168,37 @@ s(u,i) = Σ_{j ∈ 用户 train 历史} sim(j,i) · exp(-decay · age_days(j))
 | `top_n_neighbours` | 20 与 80 的 Recall 相同，但 20 的 NDCG/覆盖率/长尾占比更高 | 20 |
 | `history_decay` | 0 → 0.05 时 Recall 0.0607 → 0.0672、NDCG 0.0292 → 0.0350；0.05~0.2 之间平稳 | 0.05 |
 
-## Roadmap
+## BPR-MF 实现要点
+
+```
+x_ui = p_u · q_i        L = -ln σ(x_ui - x_uj) + λ(||p_u||² + ||q_i||² + ||q_j||²)
+```
+
+- **为什么需要它**：ItemCF 只能记忆显式共现，训练集里出现次数太少的电影没有任何邻居（本数据集 60 部），
+  MF 把每个用户/物品放进同一个隐向量空间，能对"从未共现过"的物品对打分；BPR 直接优化**排序**
+  （正例必须排在采样的负例之前），而不是还原评分，和 Top-K 目标一致。
+- **负例每个 epoch 重采**，不是固定一张 pair 表：固定负例几轮就被学穿。采样用布尔 seen 矩阵向量化拒绝，
+  只从 train 窗口内出现过的物品里采，支持均匀 + 热度（hard）混合，比例可调。
+- **早停用 valid 的 Recall@10**，每次评估只做一次 `user_factors @ item_factors.T` 稠密打分（610×9742），
+  不走完整 pipeline，因此 5 个 epoch 评估一次也几乎没有成本；训练结束恢复 best checkpoint。
+- **过拟合曲线很典型**：train loss 从 0.514 一路降到 0.015，valid Recall 却在 epoch 15 达峰（0.0639）
+  后一路跌到 0.0393。**pairwise loss 下降 ≠ 排序质量上升**，早停不是可选项。
+- `user_factors / item_factors` 已导出，双塔阶段可以直接用它做初始化对照；`score(u,i)` 也可作为精排特征。
+- 因子按 `blake2b(train 正例 + 训练超参)` 指纹缓存到 `artifacts/models/bpr/`，改任何超参都会触发重训。
+
+超参在 **valid** 上扫描（`scripts/tune_bpr.py`），结论与一个重要提醒：
+
+| 超参 | 现象 | 选择 |
+| --- | --- | --- |
+| `dim` | 32 最优 0.0672；16 欠拟合 0.0607，64/128 过拟合提前 | 32 |
+| `reg` | 0.0001→0.01 时 Recall 0.0639→0.0705，正则越强越好，印证过拟合是主要矛盾 | 0.001（见下） |
+| `hard_negative_ratio` | 纯均匀 0.0705 > 混合 0.0639 > 全热度 0.0656，本数据集热度负例无收益 | 0.0 |
+| `negatives_per_positive` | 1 / 4 / 8 → 0.0656 / 0.0639 / 0.0689，收益不抵训练时长 | 4 |
+| `lr` | 0.001 / 0.005 / 0.01 → 0.0672 / 0.0639 / 0.0639 | 0.01 |
+
+**单变量最优不可叠加**：`reg=0.01 + 均匀负例` 组合后 Recall 反而只有 0.0607。原因是 leave-last-out 下
+每个用户只有 1 个 valid 正例，`1/610 ≈ 0.0016` 就是一个用户的权重，0.005 以内的差异基本是噪声。
+所以最终只选一组稳定配置（dim=32、reg=0.001、均匀负例），不继续在小验证集上"刷点"。
 
 ## Roadmap
 
@@ -168,11 +208,11 @@ s(u,i) = Σ_{j ∈ 用户 train 历史} sim(j,i) · exp(-decay · age_days(j))
 | 1 | 下载、时序切分、防穿越断言、负采样 | 已完成 |
 | 2 | 热门基线（含时间衰减） | 已完成 |
 | 2 | ItemCF：稀疏共现 + 热度惩罚 + IUF + top-N 邻居 + 矩阵缓存 | 已完成（含 valid 调参） |
-| 3 | BPR-MF（pairwise loss、负采样、正则）+ ALS/SVD 对照 | 接口占位 |
+| 3 | BPR-MF：pairwise loss、动态负采样、valid 早停、因子缓存 | 已完成（含 valid 调参） |
 | 4 | 双塔（in-batch negatives + false-negative mask + 温度系数）、FAISS 索引 | 接口占位 |
 | 5 | DIN（行为序列 attention）/ DeepFM 对照，上游分数作为特征 | 接口占位 |
 | 6 | MMR 重排 + λ 扫描的相关性/多样性权衡曲线 | 已完成 |
-| 7 | Recall@10、NDCG@10、覆盖率、长尾覆盖率 + 消融对比 | 已完成（6 组消融） |
+| 7 | Recall@10、NDCG@10、覆盖率、长尾覆盖率 + 消融对比 | 已完成（10 组消融） |
 | 8 | FastAPI `/recommend/{user_id}` + 网页 + 冷启动兜底 + 分步耗时 | 已完成 |
 
 每完成一层，在对应类里把 `implemented` 改为 `True` 并实现 `recall` / `predict` 即可自动接入
@@ -186,6 +226,7 @@ s(u,i) = Σ_{j ∈ 用户 train 历史} sim(j,i) · exp(-decay · age_days(j))
 评估暴露离线指标与线上目标的错位 → 服务暴露延迟、缓存、降级、embedding 版本一致性。
 高频追问：为什么必须时间切分、负采样怎么做、曝光偏差与样本选择偏差（SSB）、精确/近似检索、
 冷启动、A/B 与线上指标、多路召回如何融合（本项目实测：等权 RRF 掺入热门路会伤害覆盖率与长尾，
-热门应降级为兜底）、ItemCF 的热度惩罚与 IUF、MMR 为什么有时反而提升 Recall。
+热门应降级为兜底；两路个性化召回互补，Recall 0.0656/0.0590 → 0.0820）、ItemCF 的热度惩罚与 IUF、
+BPR 的负采样与早停（train loss 下降但 valid Recall 崩）、MMR 为什么有时反而提升 Recall。
 
 数据源：MovieLens（GroupLens），`ml-latest-small` / `ml-1m`，仅用于学习与研究。

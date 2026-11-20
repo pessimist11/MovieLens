@@ -88,6 +88,39 @@ def intra_list_diversity(
     return float(np.mean(per_user)) if per_user else 0.0
 
 
+def evaluate_score_matrix(
+    scores: np.ndarray,
+    ground_truth: dict[int, set[int]],
+    seen: dict[int, set[int]],
+    k: int = 10,
+) -> dict:
+    """Recall@k / NDCG@k straight from a dense ``(n_users, n_items)`` score matrix.
+
+    Used for early stopping inside embedding models (BPR now, two-tower later):
+    one matrix product scores every user-item pair, which is far cheaper than
+    calling the full pipeline per epoch. Seen items are masked before top-k.
+    """
+    users = list(ground_truth)
+    if not users:
+        return {"recall@k": 0.0, "ndcg@k": 0.0}
+    k = min(k, scores.shape[1])
+    sub = np.asarray(scores[users], dtype=np.float32).copy()
+    for row, user in enumerate(users):
+        blocked = seen.get(user, set())
+        if blocked:
+            sub[row, np.asarray(sorted(blocked), dtype=np.int64)] = -np.inf
+    top = np.argpartition(-sub, kth=k - 1, axis=1)[:, :k]
+    ordered = np.take_along_axis(sub, top, axis=1)
+    top = np.take_along_axis(top, np.argsort(-ordered, axis=1), axis=1)
+    recall, ndcg = [], []
+    for row, user in enumerate(users):
+        recommended = top[row].tolist()
+        truth = ground_truth[user]
+        recall.append(recall_at_k(recommended, truth, k))
+        ndcg.append(ndcg_at_k(recommended, truth, k))
+    return {"recall@k": float(np.mean(recall)), "ndcg@k": float(np.mean(ndcg))}
+
+
 def evaluate_all(
     recommendations: dict[int, list[int]],
     ground_truth: dict[int, set[int]],
