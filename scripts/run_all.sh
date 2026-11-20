@@ -6,8 +6,11 @@ cd "$(dirname "$0")/.."
 ./scripts/setup.sh
 .venv/bin/python -m movielens.data.download
 .venv/bin/python -m movielens.data.prepare
-.venv/bin/python -m pytest
+PYTEST_BT="/tmp/ml-pytest-$(date +%s)"
+mkdir -p "$PYTEST_BT"
+.venv/bin/python -m pytest --basetemp="$PYTEST_BT"
 .venv/bin/python scripts/evaluate.py
+.venv/bin/python scripts/compare_index.py
 
 echo ""
 echo "[run_all] offline pipeline complete."

@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
+from movielens.api import main
 from movielens.api.main import app, get_recommender
 
 
@@ -58,7 +59,9 @@ class FakeRecommender:
 
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
+    # Avoid constructing the real pipeline (and training models) in lifespan.
+    monkeypatch.setattr(main, "Recommender", lambda: FakeRecommender())
     app.dependency_overrides[get_recommender] = lambda: FakeRecommender()
     with TestClient(app) as test_client:
         yield test_client

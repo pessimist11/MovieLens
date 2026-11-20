@@ -96,7 +96,7 @@ def evaluate_score_matrix(
 ) -> dict:
     """Recall@k / NDCG@k straight from a dense ``(n_users, n_items)`` score matrix.
 
-    Used for early stopping inside embedding models (BPR now, two-tower later):
+    Used for early stopping inside embedding models (BPR and two-tower):
     one matrix product scores every user-item pair, which is far cheaper than
     calling the full pipeline per epoch. Seen items are masked before top-k.
     """

@@ -118,4 +118,7 @@ def metrics():
     ablation_path = path.parent / "ablation.json"
     if ablation_path.exists():
         payload["ablation"] = json.loads(ablation_path.read_text(encoding="utf-8"))
+    faiss_path = path.parent / "faiss_index.json"
+    if faiss_path.exists():
+        payload["faiss_index"] = json.loads(faiss_path.read_text(encoding="utf-8"))
     return payload

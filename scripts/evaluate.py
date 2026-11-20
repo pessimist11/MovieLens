@@ -20,7 +20,7 @@ from movielens.rerank import MMRReranker
 
 # The incremental story of the project. The last two rows are the interesting
 # comparison: popularity as a backfill vs popularity inside equal-weight RRF.
-DEFAULT_VARIANT = "itemcf+bpr+popular_fallback+mmr"
+DEFAULT_VARIANT = "itemcf+bpr+two_tower+popular_fallback+mmr"
 
 ABLATIONS = [
     {"label": "popular", "sources": ["popular"], "mmr": False},
@@ -29,10 +29,17 @@ ABLATIONS = [
     {"label": "itemcf+mmr", "sources": ["itemcf"], "mmr": True},
     {"label": "bpr", "sources": ["bpr"], "mmr": False},
     {"label": "bpr+mmr", "sources": ["bpr"], "mmr": True},
+    {"label": "two_tower", "sources": ["two_tower"], "mmr": False},
+    {"label": "two_tower+mmr", "sources": ["two_tower"], "mmr": True},
     {"label": "itemcf+bpr+mmr", "sources": ["itemcf", "bpr"], "mmr": True},
     {
+        "label": "itemcf+bpr+two_tower+mmr",
+        "sources": ["itemcf", "bpr", "two_tower"],
+        "mmr": True,
+    },
+    {
         "label": DEFAULT_VARIANT,
-        "sources": ["itemcf", "bpr", "popular"],
+        "sources": ["itemcf", "bpr", "two_tower", "popular"],
         "mmr": True,
     },
     {"label": "itemcf+popular_fallback+mmr", "sources": ["itemcf", "popular"], "mmr": True},

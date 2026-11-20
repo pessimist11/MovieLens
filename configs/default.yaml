@@ -39,6 +39,26 @@ recall:
     history_size: 100             # most recent TRAIN items used as user profile
     history_decay: 0.05           # exp(-decay * age_days) weight on history items
     cache: true                   # reuse artifacts/models/itemcf when train + params match
+  two_tower:
+    dim: 64
+    hidden_dim: 128
+    lr: 0.001
+    weight_decay: 0.0001
+    epochs: 50                    # upper bound; early stopping on valid Recall@10
+    batch_size: 1024
+    extra_negatives: 32           # per positive, in addition to in-batch negatives
+    hard_negative_ratio: 0.5      # popularity^0.75 vs uniform extra negatives
+    temperature: 0.1              # full-pipeline VALID winner; tau=0.2 wins standalone only
+    history_size: 32              # strict prefix during training, full train history at eval
+    dropout: 0.1
+    eval_every: 5
+    patience: 4
+    cache: true
+    backend: auto                 # auto: NumPy exact on macOS, FAISS elsewhere; or numpy | faiss
+    index_type: flat              # flat = exact inner product; hnsw = approximate
+    hnsw_m: 32
+    hnsw_ef_construction: 80
+    hnsw_ef_search: 64
 
 mf:
   bpr:

@@ -73,7 +73,7 @@
       <label class="switch"><input type="checkbox" id="rerank" checked> 启用 MMR 重排</label>
       <button id="go">获取推荐</button>
     </div>
-    <div class="hint" id="explain">当前链路：ItemCF 协同召回（热门仅在冷启动/候选不足时兜底）→ MMR 重排；BPR / 双塔 / DIN 为后续阶段。</div>
+    <div class="hint" id="explain">当前链路：ItemCF + BPR-MF + 双塔向量召回加权 RRF（热门仅在冷启动/候选不足时兜底）→ MMR 重排；DIN / DeepFM 精排为后续阶段。</div>
     <div class="err" id="err"></div>
   </div>
 
@@ -102,6 +102,12 @@
     <h2>离线消融对比（同一 test 集、同一 K、同一 seen 过滤）</h2>
     <table id="ablation" class="abl"><tr><td class="hint">运行 scripts/evaluate.py 后显示</td></tr></table>
     <div class="hint">热门只作兜底：等权 RRF 会让热门物品挤掉个性化候选，覆盖率与长尾份额明显下降。</div>
+  </div>
+
+  <div class="panel">
+    <h2>精确检索 vs 近似检索（同一份双塔向量）</h2>
+    <table id="faiss" class="abl"><tr><td class="hint">运行 scripts/compare_index.py 后显示</td></tr></table>
+    <div class="hint" id="faissNote">FAISS Flat 与 HNSW 在独立无 torch 进程中对比，避免 macOS 两个 wheel 的 OpenMP 冲突；macOS 在线服务使用 NumPy 精确检索回退。</div>
   </div>
 </div>
 <script>
@@ -154,6 +160,20 @@ async function init() {
         '<tr><th>方案</th><th>Recall@10</th><th>NDCG@10</th><th>覆盖率</th><th>长尾占比</th><th>ILD</th></tr>' +
         m.ablation.map(r => `<tr class="${r.variant === best ? 'best' : ''}"><td>${esc(r.variant)}</td>` +
           cols.map(c => `<td>${Number(r.test[c]).toFixed(4)}</td>`).join('') + '</tr>').join('');
+    }
+    if (m.faiss_index && m.faiss_index.results) {
+      const f = m.faiss_index.results;
+      $('faiss').innerHTML =
+        '<tr><th>索引</th><th>Recall@10</th><th>NDCG@10</th><th>平均延迟(ms)</th><th>P95(ms)</th></tr>' +
+        ['flat', 'hnsw'].map(name => `<tr><td>${name.toUpperCase()}</td>` +
+          `<td>${Number(f[name]['recall@k']).toFixed(4)}</td>` +
+          `<td>${Number(f[name]['ndcg@k']).toFixed(4)}</td>` +
+          `<td>${Number(f[name].latency_ms_mean).toFixed(3)}</td>` +
+          `<td>${Number(f[name].latency_ms_p95).toFixed(3)}</td></tr>`).join('');
+      $('faissNote').textContent =
+        `Flat/HNSW Top10 重合度 ${(m.faiss_index.top10_overlap * 100).toFixed(2)}% · ` +
+        `候选集@${m.faiss_index.k} 重合度 ${(m.faiss_index[`candidate_overlap@${m.faiss_index.k}`] * 100).toFixed(2)}% · ` +
+        `NumPy 回退与 Flat Top10 重合度 ${(m.faiss_index.numpy_flat_top10_overlap * 100).toFixed(2)}%`;
     }
   } catch (e) { $('status').textContent = '服务未连接'; $('err').textContent = e.message; }
 }
