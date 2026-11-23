@@ -74,6 +74,21 @@ mf:
     patience: 4                   # stop after 4 evaluations without improvement
     cache: true                   # reuse artifacts/models/bpr when train + params match
 
+rank:
+  model: none                    # none | deepfm | din (train with scripts/train_rank.py)
+  snapshot_fraction: 0.75        # fit recall before this cutoff within TRAIN
+  snapshot_bpr_epochs: 15
+  snapshot_two_tower_epochs: 20
+  negatives_per_user: 96
+  dim: 16
+  hidden_dim: 64
+  history_size: 20
+  popularity_half_life_days: 180.0
+  epochs: 12
+  patience: 4
+  batch_size: 1024
+  lr: 0.001
+
 rerank:
   enabled: true
   lambda: 0.7                     # relevance weight in MMR

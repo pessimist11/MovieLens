@@ -56,6 +56,8 @@ def test_fallback_backfills_below_primary(rec):
     assert all(c.score < primary_min for c in merged[2:])
     assert merged[0].source == "itemcf"
     assert merged[-1].source == "popular"
+    assert merged[0].recall_scores == {"itemcf": 1.0}
+    assert merged[-1].recall_scores == {"popular": 1.0 / 3}
 
 
 def test_fallback_serves_cold_start(rec):

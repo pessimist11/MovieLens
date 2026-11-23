@@ -1,28 +1,44 @@
-"""DeepFM ranker - stage 5 placeholder (alternative to DIN).
+"""DeepFM with shared fields for the factorization machine and MLP."""
 
-Implementation plan:
-  * shared embeddings feeding both an FM second-order interaction term and a
-    DNN, so low-order and high-order feature crosses are learned jointly;
-  * fields: user_idx, item_idx, genre multi-hot, user activity / mean rating,
-    item popularity, time-decayed popularity, and the three upstream scores
-    (ItemCF, BPR-MF, two-tower) as stacked features;
-  * train on pointwise samples built from TRAIN-window candidates only, monitor
-    AUC / LogLoss on VALID, and keep the full-pipeline Recall@K / NDCG@K as the
-    real objective.
-"""
+import torch
+from torch import nn
 
-from __future__ import annotations
-
-from ..schema import Candidate, RankModel
+from .base import DENSE_FEATURES, RankNetwork, TrainedRanker
 
 
-class DeepFMRanker(RankModel):
+class DeepFM(RankNetwork):
+    def __init__(self, dataset, cfg):
+        super().__init__(dataset, cfg)
+        dim, hidden = cfg.rank.dim, cfg.rank.hidden_dim
+        n_genres = dataset.genre_matrix.shape[1]
+        self.genre = nn.Linear(n_genres, dim, bias=False)
+        self.numeric = nn.Parameter(torch.empty(DENSE_FEATURES, dim))
+        nn.init.normal_(self.numeric, std=0.05)
+        self.wide = nn.Linear(DENSE_FEATURES + n_genres, 1)
+        self.wide_user = nn.Embedding(dataset.n_users + 1, 1, padding_idx=0)
+        self.wide_item = nn.Embedding(dataset.n_items + 1, 1, padding_idx=0)
+        nn.init.zeros_(self.wide_user.weight)
+        nn.init.zeros_(self.wide_item.weight)
+        self.mlp = nn.Sequential(
+            nn.Linear((3 + DENSE_FEATURES) * dim, hidden),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden, 1),
+        )
+
+    def forward(self, users, items, genres, dense, history):
+        dense = self.normalize(dense)
+        fields = torch.cat((
+            torch.stack((self.user(users), self.item(items), self.genre(genres)), dim=1),
+            dense.unsqueeze(-1) * self.numeric,
+        ), dim=1)
+        fm = 0.5 * (fields.sum(dim=1).square() - fields.square().sum(dim=1)).sum(dim=1)
+        wide = self.wide(torch.cat((genres, dense), dim=1))
+        wide = wide + self.wide_user(users) + self.wide_item(items)
+        return fm + (wide + self.mlp(fields.flatten(1))).squeeze(-1)
+
+
+class DeepFMRanker(TrainedRanker):
     name = "deepfm"
-    implemented = False
-
-    def __init__(self, dataset, dim: int = 16):
-        self.dataset = dataset
-        self.dim = dim
-
-    def predict(self, user_idx: int, candidates: list[Candidate]) -> list[Candidate]:
-        raise NotImplementedError("DeepFM is scheduled for stage 5")
+    implemented = True
+    network = DeepFM

@@ -7,6 +7,7 @@ having a separate "research" pipeline and a separate "production" pipeline.
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import replace
 from time import perf_counter
 
 from .config import Config, load_config
@@ -15,21 +16,26 @@ from .eval.metrics import evaluate_all
 from .rank import RANK_REGISTRY
 from .recall import RECALL_REGISTRY
 from .rerank import MMRReranker
-from .schema import Candidate, Metrics, Recommendation
+from .schema import Candidate, Metrics, RecallModel, Recommendation
 
 RRF_CONSTANT = 60.0
+MMR_CANDIDATE_LIMIT = 50
 
 
 class Recommender:
-    def __init__(self, dataset: Dataset | None = None, cfg: Config | None = None):
+    def __init__(
+        self,
+        dataset: Dataset | None = None,
+        cfg: Config | None = None,
+        *,
+        recall_models: list[RecallModel] | None = None,
+    ):
         self.cfg = cfg or load_config()
         self.dataset = dataset or load_dataset()
-        self.recall_models = [
+        self.recall_models = recall_models if recall_models is not None else [
             cls(self.dataset) for cls in RECALL_REGISTRY if cls.implemented
         ]
-        self.ranker = next(
-            (cls(self.dataset) for cls in RANK_REGISTRY if cls.implemented), None
-        )
+        self.ranker = self.load_ranker(self.cfg.rank.model)
         self.reranker = (
             MMRReranker(self.dataset, self.cfg.rerank.lambda_)
             if self.cfg.rerank.enabled
@@ -40,6 +46,14 @@ class Recommender:
             else set(str(g).split("|"))
             for g in self.dataset.movies["genres"].tolist()
         ]
+
+    def load_ranker(self, name: str):
+        if name == "none":
+            return None
+        for cls in RANK_REGISTRY:
+            if cls.name == name and cls.implemented:
+                return cls(self.dataset, self.cfg)
+        raise ValueError(f"Unknown rank.model: {name!r}")
 
     def stages(self) -> dict:
         """Report which stages are wired in, for /health and the README roadmap."""
@@ -60,7 +74,11 @@ class Recommender:
                 for cls in RECALL_REGISTRY
             ],
             "rank": [
-                {"name": cls.name, "implemented": cls.implemented}
+                {
+                    "name": cls.name,
+                    "implemented": cls.implemented,
+                    "active": self.ranker is not None and self.ranker.name == cls.name,
+                }
                 for cls in RANK_REGISTRY
             ],
             "rerank": {
@@ -79,6 +97,7 @@ class Recommender:
         weights = self.cfg.raw.get("recall", {}).get("source_weights", {}) or {}
         fused: dict[int, float] = defaultdict(float)
         sources: dict[int, set[str]] = defaultdict(set)
+        raw_scores: dict[int, dict[str, float]] = defaultdict(dict)
         for model in models:
             weight = float(weights.get(model.name, 1.0))
             for rank, cand in enumerate(
@@ -86,11 +105,13 @@ class Recommender:
             ):
                 fused[cand.item_idx] += weight / (RRF_CONSTANT + rank + 1)
                 sources[cand.item_idx].add(cand.source)
+                raw_scores[cand.item_idx][model.name] = cand.score
         merged = [
             Candidate(
                 item_idx=i,
                 score=score,
                 source="+".join(sorted(sources[i])),
+                recall_scores=raw_scores[i],
             )
             for i, score in fused.items()
         ]
@@ -121,7 +142,7 @@ class Recommender:
         present = {c.item_idx for c in merged}
         floor = min(c.score for c in merged) * 0.5
         extras = [
-            Candidate(item_idx=c.item_idx, score=floor * (0.99**rank), source=c.source)
+            replace(c, score=floor * (0.99**rank))
             for rank, c in enumerate(self._rrf(fallback, user_idx, exclude))
             if c.item_idx not in present
         ]
@@ -150,7 +171,7 @@ class Recommender:
 
         active_reranker = reranker if reranker is not None else self.reranker
         if use_rerank and active_reranker is not None:
-            final = active_reranker.rerank(candidates[:50], k)
+            final = active_reranker.rerank(candidates[:MMR_CANDIDATE_LIMIT], k)
         else:
             final = candidates[:k]
         t3 = perf_counter()

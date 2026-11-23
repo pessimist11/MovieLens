@@ -136,7 +136,9 @@ async function init() {
       for (const group of ['recall', 'rank']) {
         for (const s of h.stages[group]) {
           const role = s.role === 'fallback' ? ' · 兜底' : '';
-          rows.push([`${group}: ${s.name}${role}`, s.implemented ? '已实现' : '待实现']);
+          const state = !s.implemented ? '待实现'
+            : group === 'rank' ? (s.active ? '已启用' : '未启用') : '已实现';
+          rows.push([`${group}: ${s.name}${role}`, state]);
         }
       }
       rows.push(['rerank: mmr', h.stages.rerank.implemented ? '已实现' : '待实现']);
@@ -155,10 +157,10 @@ async function init() {
     }
     if (Array.isArray(m.ablation)) {
       const cols = ['recall@k', 'ndcg@k', 'coverage', 'long_tail_share', 'ild'];
-      const best = m.ablation.reduce((a, b) => (b.test['recall@k'] > a.test['recall@k'] ? b : a)).variant;
+      const defaultVariant = m.model;
       $('ablation').innerHTML =
         '<tr><th>方案</th><th>Recall@10</th><th>NDCG@10</th><th>覆盖率</th><th>长尾占比</th><th>ILD</th></tr>' +
-        m.ablation.map(r => `<tr class="${r.variant === best ? 'best' : ''}"><td>${esc(r.variant)}</td>` +
+        m.ablation.map(r => `<tr class="${r.variant === defaultVariant ? 'best' : ''}"><td>${esc(r.variant)}</td>` +
           cols.map(c => `<td>${Number(r.test[c]).toFixed(4)}</td>`).join('') + '</tr>').join('');
     }
     if (m.faiss_index && m.faiss_index.results) {
@@ -193,7 +195,7 @@ $('go').addEventListener('click', async () => {
         <div class="rank">${i + 1}</div>
         <div style="min-width:0">
           <div class="title">${esc(it.title)}</div>
-          <div class="meta">movieId ${it.movie_id} · 分数 ${it.score.toFixed(5)} · ${esc(it.reason)}</div>
+          <div class="meta">movieId ${it.movie_id} · 融合分 ${it.score.toFixed(5)}${typeof it.rank_score === 'number' ? ` · 精排分 ${it.rank_score.toFixed(5)}` : ''} · ${esc(it.reason)}</div>
           <div>${(it.genres || []).map(g => `<span class="tag">${esc(g)}</span>`).join('')}</div>
         </div>
         <div class="src">${esc(it.source)}</div>

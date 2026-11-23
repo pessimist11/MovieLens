@@ -8,7 +8,7 @@ online serving on exactly the same code path.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -17,6 +17,7 @@ class Candidate:
     score: float
     source: str
     rank_score: float | None = None
+    recall_scores: dict[str, float] = field(default_factory=dict, compare=False, hash=False)
 
 
 @dataclass(frozen=True)

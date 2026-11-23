@@ -55,6 +55,23 @@ class RecallCfg:
 
 
 @dataclass(frozen=True)
+class RankCfg:
+    model: str = "none"
+    snapshot_fraction: float = 0.75
+    snapshot_bpr_epochs: int = 15
+    snapshot_two_tower_epochs: int = 20
+    negatives_per_user: int = 96
+    dim: int = 16
+    hidden_dim: int = 64
+    history_size: int = 20
+    popularity_half_life_days: float = 180.0
+    epochs: int = 12
+    patience: int = 4
+    batch_size: int = 1024
+    lr: float = 0.001
+
+
+@dataclass(frozen=True)
 class RerankCfg:
     enabled: bool = True
     lambda_: float = 0.7
@@ -85,6 +102,7 @@ class Config:
     split: SplitCfg = field(default_factory=SplitCfg)
     eval: EvalCfg = field(default_factory=EvalCfg)
     recall: RecallCfg = field(default_factory=RecallCfg)
+    rank: RankCfg = field(default_factory=RankCfg)
     rerank: RerankCfg = field(default_factory=RerankCfg)
     api: ApiCfg = field(default_factory=ApiCfg)
     raw: dict[str, Any] = field(default_factory=dict)
@@ -100,6 +118,7 @@ class Config:
             split=_build(SplitCfg, values.get("split", {})),
             eval=_build(EvalCfg, values.get("eval", {})),
             recall=_build(RecallCfg, values.get("recall", {})),
+            rank=_build(RankCfg, values.get("rank", {})),
             rerank=_build(RerankCfg, values.get("rerank", {})),
             api=_build(ApiCfg, values.get("api", {})),
             raw=values,

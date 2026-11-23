@@ -1,13 +1,10 @@
-# MovieLens 推荐系统（从零搭建）
+# MovieLens 推荐系统
 
-一条完整的推荐系统链路：**时序切分 → 多路召回 → 精排 → MMR 重排 → 离线评估 → FastAPI 服务 + 网页**。
-不使用现成的推荐库一键完成，每一层都自己实现、可插拔、可对比。
+从零实现的一条推荐链路：时序切分 → 多路召回 → 可选精排 → MMR 重排 → 离线评估 → FastAPI + 网页。各层可插拔，离线评估与线上服务共用同一条 pipeline。
 
-> 当前状态：**阶段 0/1/2/3/4/6/7/8 已完成**。链路为
-> `ItemCF + BPR-MF + 双塔向量召回（加权 RRF，热门仅兜底）→ MMR 重排 → 评估 → FastAPI + 网页`，
-> 47 个 pytest 全过，test 集 `Recall@10 = 0.0836`，是热门基线的 2.22 倍、单路 ItemCF 的 1.28 倍。
-> DIN / DeepFM 精排已定义接口与实现计划，代码为占位（见下方 Roadmap）。
-> 每完成一层只需把 `implemented = True` 打开，`pipeline.py` 会自动接入，无需改动其他代码。
+当前默认方案为 ItemCF + BPR-MF + 双塔（加权 RRF 融合，热门仅兜底）→ MMR，test 集 `Recall@10 = 0.0836`、`NDCG@10 = 0.0414`。DeepFM 和 DIN 已接入并完成对照，默认设置依据 valid 保持 `rank.model: none`。
+
+[项目说明](docs/项目说明.md)从一次真实推荐请求讲起，介绍数据、模型和服务架构，以及每一层对应的搜广推技术。
 
 ## 快速开始
 
@@ -22,11 +19,13 @@
 ./scripts/setup.sh                                   # 建 venv + 装依赖
 .venv/bin/python -m movielens.data.download         # 下载 ml-latest-small
 .venv/bin/python -m movielens.data.prepare          # 时序切分 + 负采样
-.venv/bin/python -m pytest                          # 47 项测试
+.venv/bin/python -m pytest                          # 50 项测试
 .venv/bin/python scripts/tune_itemcf.py             # ItemCF 超参扫描（只用 valid）
 .venv/bin/python scripts/tune_bpr.py                # BPR-MF 超参扫描（只用 valid）
 .venv/bin/python scripts/tune_two_tower.py          # 双塔温度/历史长度扫描（只用 valid）
 .venv/bin/python scripts/evaluate.py                # 消融对比 + MMR λ 扫描
+.venv/bin/python scripts/train_rank.py              # 训练 DeepFM / DIN，并缓存模型
+.venv/bin/python scripts/evaluate.py --rank         # 加入精排对照，重新扫描 MMR λ
 .venv/bin/python scripts/compare_index.py           # Flat/HNSW/NumPy 精确检索对照
 .venv/bin/python -m uvicorn movielens.api.main:app --port 8000
 # 打开 http://127.0.0.1:8000/
@@ -37,7 +36,22 @@
 
 接口示例：`GET /recommend/1?k=10&lam=0.7`，另有 `/health`、`/users`、`/movies/{movie_id}`、`/metrics`。
 换数据集：改 `configs/default.yaml` 的 `data.dataset` 为 `ml-1m`（该数据集含用户人口属性，双塔会自动编码进用户塔），
-切分方式可切 `split.strategy: leave_last_out`。
+全局时间切分可用 `split.strategy: global`。
+
+## 部署演练
+
+先生成数据、模型缓存和指标。打包脚本只携带当前配置使用的模型、处理数据、指标和服务源码。
+
+```bash
+uv pip compile --python .venv/bin/python requirements.txt -o /tmp/movielens-runtime.txt
+.venv/bin/python scripts/package_release.py dist/movielens-release --lock /tmp/movielens-runtime.txt
+cd dist/movielens-release
+uv venv --python 3.12 .venv
+uv pip sync --python .venv/bin/python requirements.lock.txt
+.venv/bin/python scripts/smoke_deploy.py
+```
+
+锁文件按目标系统和架构解析。演练脚本只在 `127.0.0.1` 的临时端口启动 Uvicorn，用真实 HTTP 请求检查首页、就绪状态、普通推荐、冷启动、电影详情和指标。重启后对比推荐结果，并检查模型缓存文件是否被改写。Linux 上也使用同一脚本验收 FAISS 服务。
 
 ## 环境说明
 
@@ -68,7 +82,7 @@ src/movielens/
   recall/two_tower.py         双塔训练、InfoNCE、embedding 缓存、召回适配
   faiss_index.py              独立于 torch 的 Flat/HNSW 索引与显式 id 映射
   mf/bpr.py                   BPR-MF：pairwise 训练、动态负采样、valid 早停、向量缓存
-  rank/{din,deepfm}.py        精排（占位）
+  rank/                       候选采样、共享特征、DeepFM / DIN 及模型缓存
   rerank/mmr.py               MMR 重排
   eval/metrics.py             Recall/NDCG/覆盖率/长尾/新颖度/ILD + 分数矩阵快速评估
   pipeline.py                 唯一的编排链路（离线与在线共用）
@@ -84,7 +98,7 @@ artifacts/models/{itemcf,bpr,two_tower}/  模型与索引缓存（按 train 数�
 
 ```
 全量物品池 → 个性化多路召回(加权 RRF) → 热门兜底补尾 → 精排打分 → MMR 重排 → Top-K
-                  ↑ 每一步都过滤 seen，且只用时间点之前的数据
+                  ↑ 召回时过滤 seen，精排使用训练窗快照特征
 ```
 
 1. **统一候选格式**：每层都输出 `list[Candidate]`，内部一律用连续的 `user_idx / item_idx`，
@@ -96,14 +110,14 @@ artifacts/models/{itemcf,bpr,two_tower}/  模型与索引缓存（按 train 数�
 3. **时间切分不随机**：默认 `leave_last_out`（每个用户最后一条 = test、倒数第二条 = valid），
    这样 610 个用户都有测试正例、模型对比更稳；`configs/default.yaml` 可切 `global`
    （按全局时间戳 80/10/10 切，更贴近线上，但 test 用户少、冷启动占比高）。
-   两种策略都有硬断言：任何 `(user, item)` 对不得跨 split 出现。
+   两种策略均断言 `(user, item)` 对不会跨 split。按用户留出可能让共享模型看到晚于某个用户评估事件的其他用户行为。
 4. **seen 分场景**：评估 valid 时 seen 只含 train；评估 test 时 seen 含 train+valid；
    线上服务用 `seen["all"]` 过滤用户全部历史。冷启动用户走热门榜兜底。
 5. **负采样**：只从 train 时间窗内出现过的电影里采，按 `hard_negative_ratio` 混合均匀负例与
    热度负例，且用布尔矩阵向量化地剔除用户已看过的物品，绝不把未来新片当负例。
 6. **离线/在线同一份 `pipeline.py`**，避免训练与服务不一致（train/serve skew）。
 
-## 指标口径（README 写清楚，面试才讲得清）
+## 指标口径
 
 | 指标 | 定义 |
 | --- | --- |
@@ -135,21 +149,13 @@ artifacts/models/{itemcf,bpr,two_tower}/  模型与索引缓存（按 train 数�
 | itemcf + 热门兜底 + MMR | 0.0656 | 0.0316 | 0.0946 | 0.0536 | 0.0964 | 0.7188 |
 | popular + itemcf 等权 RRF + MMR | 0.0574 | 0.0260 | 0.0304 | 0.0095 | 0.0152 | 0.7339 |
 
-五个值得记住的结论：
+结果要点：
 
-1. **协同过滤相对热门基线**：Recall `0.0377 → 0.0656`（+74%），Coverage `0.0124 → 0.0946`（7.6 倍），
-   长尾占比 `0 → 0.0964`。热门基线长尾覆盖恒为 0，就是马太效应的量化证据。
-2. **多路个性化召回互补**：ItemCF + BPR 两路 RRF 后 Recall `0.0820`，比单路分别高 25% / 35%。
-   BPR 隐向量覆盖更广、ItemCF 共现图更偏小众；加入双塔后 Recall 再升到 `0.0836`。
-3. **双塔主要贡献不是命中率，而是曝光结构**：单路双塔 Recall 只有 0.0639，但 Coverage 0.3172、
-   长尾占比 0.4159，远高于 ItemCF/BPR。三路融合把覆盖率从 0.0894 抬到 0.1394（+56%）、
-   长尾占比从 0.0280 抬到 0.0770（2.75 倍），NDCG 同步提升，ILD 仅从 0.7298 小幅降到 0.7179。
-4. **MMR 不只是"牺牲相关性换多样性"**：ItemCF 单路加 MMR 后 Recall 从 0.0607 升到 0.0656、ILD 从
-   0.6685 升到 0.7188；双塔单路加 MMR 后 Recall 从 0.0639 升到 0.0689。原始 Top10 常挤满同一批
-   高相似物品，去同质化后正确答案才有机会进入前 10。
-5. **多路召回不是"加一路就更好"**：把热门和 ItemCF 等权 RRF 后 Recall 降到 0.0574、长尾占比跌到
-   0.0152。热门物品永远占据 popular 路的 rank 0，RRF 给它们稳定的 `1/61` 分，个性化候选反而被稀释。
-   RRF 权重扫描（valid）也显示 0.005 以内的差异只有一个测试用户的量级，默认保持等权。
+- ItemCF + MMR 相比热门基线：Recall `0.0377 → 0.0656`，Coverage `0.0124 → 0.0946`，长尾占比 `0 → 0.0964`；热门基线长尾覆盖恒为 0。
+- ItemCF + BPR 两路 RRF 的 Recall 为 `0.0820`，高于单路最佳（`itemcf + MMR 0.0656`、`bpr + MMR 0.0607`）；加入双塔后 `0.0836`。
+- 双塔单路 Recall 仅 0.0639，但 Coverage 0.3172、长尾占比 0.4159；三路融合后覆盖率 `0.0894 → 0.1394`、长尾占比 `0.0280 → 0.0770`。
+- MMR 在本数据集同时提升 Recall 与 ILD：ItemCF 单路 `0.0607 → 0.0656`、ILD `0.6685 → 0.7188`；双塔单路 Recall `0.0639 → 0.0689`。
+- 热门与个性化源等权 RRF 后 Recall 降到 0.0574、长尾占比 0.0152，因此热门只作兜底；valid 上的 RRF 权重扫描差异在 0.005 以内，默认等权。
 
 复现：`scripts/evaluate.py`，结果写入 `artifacts/metrics/{ablation,baseline,mmr_tradeoff}.json`（不入库）。
 
@@ -244,8 +250,26 @@ Flat/HNSW 的 Top10 平均重合度 **97.93%**、候选集@200 重合度 **80.29
 **调参必须对齐最终目标**（`scripts/tune_two_tower.py`，仅 valid）：单模型看 `τ=0.2` 最优
 （Recall 0.1000 / NDCG 0.0485，`τ=0.1` 是 0.0902 / 0.0431），但把它接进三路 RRF 后全链路 valid
 降到 0.0885 / 0.0444；`τ=0.1` 的全链路 valid 是 0.1033 / 0.0485、test 是 0.0836 / 0.0414。
-`history_size=64` 单模型也比 32 略好，但训练更慢、链路无增益。因此默认保持 `τ=0.1 / history_size=32`——
-**单塔离线最优不等于多路融合最优**，这是比多报 0.01 更值得讲清的结论。
+`history_size=64` 单模型也比 32 略好，但训练更慢、链路无增益。因此默认保持 `τ=0.1 / history_size=32`。单塔离线最优不等于多路融合最优。
+
+## 阶段 5 精排
+
+训练先按全局时间在 `train` 内取一个切点。召回模型、已看集合、行为序列和统计特征仅使用严格早于切点的训练交互。候选限于切点前已有交互的电影，用切点之后剩余训练窗中的交互标记命中。负例从召回候选内抽取，并在 pointwise BCE 中用抽样权重恢复候选频率。这是基于评分记录的代理标签，MovieLens 未记录真实曝光。
+
+- 共用特征包括用户和电影 ID、类型、用户交互数与平均评分、训练交互热度和时间衰减热度。RRF 保留每路召回的分数，精排同时使用融合分、ItemCF / BPR / 双塔分数及缺失标记。
+- DeepFM 使用共享特征嵌入的 FM 二阶交叉与 MLP。DIN 通过候选物品对最近历史计算注意力权重，屏蔽填充位置。
+- `train_rank.py` 按 valid 全链路 Recall@10、NDCG@10 选择 checkpoint，并记录候选级 AUC 与 LogLoss。两个模型共用同一个训练切点。模型缓存随训练与验证数据、特征和配置变化失效。
+- 运行 `scripts/train_rank.py` 后可将 `rank.model` 改为 `deepfm` 或 `din` 再启动 API。`/health` 显示已启用模型，推荐项显示 `rank_score`。无训练历史的用户继续走热门兜底。
+
+在本机 `ml-latest-small` 的 `leave_last_out` 实验中，训练快照生成 18,185 条候选样本，其中 4,941 条命中。下表固定召回配置和 MMR λ=0.7，valid 和 test 各 610 位用户。
+
+| 精排器 | Valid Recall@10 | Valid NDCG@10 | Test Recall@10 | Test NDCG@10 |
+| --- | ---: | ---: | ---: | ---: |
+| 关闭 | 0.1033 | 0.0485 | 0.0836 | 0.0414 |
+| DeepFM | 0.0820 | 0.0361 | 0.0475 | 0.0218 |
+| DIN | 0.0590 | 0.0334 | 0.0377 | 0.0192 |
+
+`evaluate.py --rank` 输出 17 组消融，并在整个 valid 上按三种精排设置扫描 λ。无精排时 λ=1 的 valid Recall@10 为 0.1082，λ=0.7 的列表多样性 ILD 为 0.7173，高于 λ=1 的 0.6540。默认保留 λ=0.7 的相关性与多样性取舍。
 
 ## Roadmap
 
@@ -257,23 +281,11 @@ Flat/HNSW 的 Top10 平均重合度 **97.93%**、候选集@200 重合度 **80.29
 | 2 | ItemCF：稀疏共现 + 热度惩罚 + IUF + top-N 邻居 + 矩阵缓存 | 已完成（含 valid 调参） |
 | 3 | BPR-MF：pairwise loss、动态负采样、valid 早停、因子缓存 | 已完成（含 valid 调参） |
 | 4 | 双塔 + FAISS：in-batch negatives、false-negative mask、温度系数、Flat/HNSW 对照 | 已完成（含 valid 调参与索引对照） |
-| 5 | DIN（行为序列 attention）/ DeepFM 对照，上游分数作为特征 | 接口占位 |
+| 5 | 时序候选采样、DeepFM / DIN 精排、上游分数作为特征 | 已完成（默认关闭，可配置启用） |
 | 6 | MMR 重排 + λ 扫描的相关性/多样性权衡曲线 | 已完成 |
-| 7 | Recall@10、NDCG@10、覆盖率、长尾覆盖率 + 消融对比 | 已完成（13 组消融） |
+| 7 | Recall@10、NDCG@10、覆盖率、长尾覆盖率 + 消融对比 | 已完成（含精排共 17 组） |
 | 8 | FastAPI `/recommend/{user_id}` + 网页 + 冷启动兜底 + 分步耗时 | 已完成 |
 
-每完成一层，在对应类里把 `implemented` 改为 `True` 并实现 `recall` / `predict` 即可自动接入
-`RECALL_REGISTRY` / `RANK_REGISTRY`，评估与 API 无需修改。
-
-## 面试主线
-
-每一层要能说清「解决了上一层什么问题、代价是什么」：热门无个性化且有马太效应 → ItemCF 引入协同
-但稀疏/冷启动差 → BPR 用隐向量泛化并直接优化排序 → 双塔加入 side feature 且能用 ANN 检索百万候选，
-但用户与物品直到最后才交互 → 精排做交叉特征与兴趣建模，只能打几百个候选 → 重排修多样性与长尾 →
-评估暴露离线指标与线上目标的错位 → 服务暴露延迟、缓存、降级、embedding 版本一致性。
-高频追问：为什么必须时间切分、负采样与 false-negative mask、曝光偏差与样本选择偏差（SSB）、
-in-batch negatives 和温度系数、精确/近似检索、冷启动、A/B 与线上指标、多路召回融合
-（本项目实测：热门参与等权 RRF 会伤害覆盖率与长尾；三路个性化召回使 Recall 0.0820 → 0.0836、
-覆盖率 0.0894 → 0.1394）、单模型指标与全链路指标错位、BPR 的负采样与早停、MMR 为何有时提升 Recall。
+召回和精排模型分别注册到 `RECALL_REGISTRY` 与 `RANK_REGISTRY`，离线评估与 API 共用同一条推荐链路。
 
 数据源：MovieLens（GroupLens），`ml-latest-small` / `ml-1m`，仅用于学习与研究。

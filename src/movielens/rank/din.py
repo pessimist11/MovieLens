@@ -1,31 +1,39 @@
-"""DIN ranker - stage 5 placeholder (preferred option).
+"""DIN with candidate-conditioned activation over recent behavior."""
 
-Implementation plan:
-  * build a time-ordered behaviour sequence per user from TRAIN interactions;
-  * activation unit: the candidate item attends over the history sequence, so
-    the user representation changes with the candidate (unlike a fixed tower
-    vector); add Dice / PReLU and mini-batch-aware regularisation as needed;
-  * features: id / genre / popularity / user stats + upstream recall scores;
-  * guard against sample selection bias: the ranker only ever scores recall
-    candidates, so its training samples must be drawn from the same candidate
-    distribution, not from uniformly sampled negatives.
+import torch
+from torch import nn
 
-Output contract: returns the same candidates with ``rank_score`` attached.
-"""
-
-from __future__ import annotations
-
-from ..schema import Candidate, RankModel
+from .base import DENSE_FEATURES, RankNetwork, TrainedRanker
 
 
-class DINRanker(RankModel):
+class DIN(RankNetwork):
+    def __init__(self, dataset, cfg):
+        super().__init__(dataset, cfg)
+        dim, hidden = cfg.rank.dim, cfg.rank.hidden_dim
+        self.activation = nn.Sequential(
+            nn.Linear(4 * dim, dim), nn.PReLU(), nn.Linear(dim, 1)
+        )
+        self.mlp = nn.Sequential(
+            nn.Linear(3 * dim + dataset.genre_matrix.shape[1] + DENSE_FEATURES, hidden),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden, 1),
+        )
+
+    def forward(self, users, items, genres, dense, history):
+        target = self.item(items)
+        keys = self.item(history)
+        queries = target.unsqueeze(1).expand_as(keys)
+        interaction = torch.cat((queries, keys, queries - keys, queries * keys), dim=-1)
+        mask = history.ne(0)
+        weights = self.activation(interaction).squeeze(-1).sigmoid() * mask
+        context = (weights.unsqueeze(-1) * keys).sum(dim=1)
+        context = context / mask.sum(dim=1, keepdim=True).clamp_min(1).sqrt()
+        features = torch.cat((self.user(users), target, context, genres, self.normalize(dense)), dim=-1)
+        return self.mlp(features).squeeze(-1)
+
+
+class DINRanker(TrainedRanker):
     name = "din"
-    implemented = False
-
-    def __init__(self, dataset, dim: int = 16, max_history: int = 50):
-        self.dataset = dataset
-        self.dim = dim
-        self.max_history = max_history
-
-    def predict(self, user_idx: int, candidates: list[Candidate]) -> list[Candidate]:
-        raise NotImplementedError("DIN is scheduled for stage 5")
+    implemented = True
+    network = DIN
